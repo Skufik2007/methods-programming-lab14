@@ -24,7 +24,20 @@ def section_collectors(d: dict[str, Any]) -> str:
             f"{p['backlog_hours']} ч. CPU — % одного ядра.\n\n"
             + table(["устройств", "LATENCY_MS", "сборщик", "показ./с", "пик RSS, МБ", "CPU, %", "прогонов"], rows)
             + f"\n\nПроверка сопоставимости: {ok} из {len(checks)} пар прогонов — оба собрали данные и "
-              "общие префиксы строк устройств совпали побайтно.\n\n![collectors](../img/bench_collectors.png)\n")
+              "общие префиксы строк устройств совпали побайтно.\n\n![collectors](../img/bench_collectors.png)\n"
+            + section_batch_sweep(d))
+
+
+def section_batch_sweep(d: dict[str, Any]) -> str:
+    """Влияние BATCH_SIZE: при fsync после каждого пакета маленький пакет упирается в диск (находка №5)."""
+    sweep = d.get("batch_sweep") or []
+    if not sweep:
+        return ""
+    rows = [[s["batch_size"], s["collector"], f"{s['readings_per_s']:.0f}", f"{s['cpu_pct']:.0f}", s["runs"]]
+            for s in sweep]
+    return ("\n### Размер пакета (fsync после каждого пакета)\n\n200 устройств, LATENCY_MS=0. Основная таблица "
+            f"снята с BATCH_SIZE={d['params'].get('batch_size', '?')}.\n\n"
+            + table(["BATCH_SIZE", "сборщик", "показ./с", "CPU, %", "прогонов"], rows) + "\n")
 
 
 def section_transport(d: dict[str, Any]) -> str:
