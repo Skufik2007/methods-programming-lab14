@@ -65,3 +65,23 @@
   etcd — это и есть смысл задания 5 вместе с заданием 1.
 - e2e проверяет поведение (разбиение, перехват устройств, данные во всех стоках), а не
   только «контейнеры поднялись» — урок ЛР №13 (там e2e засчитывал провалы как успех).
+
+## Ответ генератора (итоговое сообщение, сокращено)
+
+Проверка генератором: YAML разбирается, ruff и `py_compile` для `scripts/` чисто, `dev.ps1` разобран
+парсером PowerShell, теги образов существуют. Docker, Kubernetes и CI — первый запуск в GitHub Actions.
+
+Файлы: `.dockerignore`, `deploy/go.Dockerfile` (golang:1.27-alpine → alpine:3.22, uid 10001),
+`deploy/python.Dockerfile` (колесо maturin на первом этапе), `compose.yaml` (etcd v3.7.2, nats -js,
+sensorsim, collector-1/2, streaming, dashboard :8000), `k8s/` (namespace, etcd, nats, sensorsim,
+collector, hpa, kustomization), `.github/workflows/ci.yml` (go, rust, python, compose, k8s),
+`scripts/e2e.py`, `scripts/dev.ps1`.
+
+Допущения генератора: `FLIGHT_ADVERTISE=collector-N:8815` в compose; в k8s сборщик `SINKS=files,nats`,
+`EMIT=agg` без Flight (не раздувать RSS), `COLLECTOR_ID` = имя пода, initContainer ждёт зависимости;
+etcd и NATS в k8s — Deployment; нагрузка для HPA — `DEVICES=3000`, `PERIOD_MS=50` и `rollout restart`
+сборщиков (список устройств кэшируется при старте); `cargo test` с `LD_LIBRARY_PATH` из `sysconfig`;
+`dev.ps1 stop` — `taskkill /PID /T /F` только по своим PID.
+
+Проверить в CI: сборку колеса в образе (toolchain копируется из `rust:1.99-slim`), healthcheck etcd через
+`etcdctl`, `cargo test` с libpython, достижение 60% CPU для HPA.
