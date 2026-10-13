@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import numpy as np
 import polars as pl
+import pyarrow as pa
+import pyarrow.compute as pc
 
 try:
     import vitals_validate as _rust
@@ -49,8 +51,23 @@ def validate_rust(df: pl.DataFrame) -> pl.Series:
     # null -> NaN (в Rust пропуск кодируется NaN); массив без копии, если null нет
     value = df["value"].cast(pl.Float64).fill_null(float("nan")).to_numpy()
     value = np.ascontiguousarray(value, dtype=np.float64)
-    codes = _rust.validate_columns(df["metric"].to_list(), value, df["unit"].to_list())
+    metric_codes, metric_dict = _dictionary(df["metric"])
+    unit_codes, unit_dict = _dictionary(df["unit"])
+    codes = _rust.validate_coded(metric_codes, metric_dict, value, unit_codes, unit_dict)
     return pl.Series("validation", codes, dtype=pl.UInt8)
+
+
+def _dictionary(column: pl.Series) -> tuple[np.ndarray, list[str | None]]:
+    """Столбец строк -> (коды int32, словарь уникальных значений); null -> код -1.
+
+    Так в Rust уходит массив чисел без копии вместо миллиона строк Python: перевод столбца в
+    список (to_list) стоил дороже самой проверки, и Rust проигрывал чистому Polars.
+    """
+    encoded = pc.dictionary_encode(column.cast(pl.String).to_arrow())
+    if isinstance(encoded, pa.ChunkedArray):
+        encoded = encoded.combine_chunks()
+    codes = pc.fill_null(encoded.indices.cast(pa.int32()), -1).to_numpy(zero_copy_only=False)
+    return np.ascontiguousarray(codes, dtype=np.int32), encoded.dictionary.to_pylist()
 
 
 def validate_polars(df: pl.DataFrame) -> pl.Series:
