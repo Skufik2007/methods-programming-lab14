@@ -46,3 +46,21 @@
 
 - Ожидания из контракта и запрет приватных импортов — замечания бота по ЛР №12–13.
 - effort low и лимит циклов — генератор тестов Python в ЛР №13 потратил 268k токенов.
+
+## Ответ генератора (итоговое сообщение, сокращено)
+
+Файлы `tests/unit/`: `test_analytics.py` (20), `test_streaming.py` (29), `test_dashboard.py` (19),
+`test_pycollector.py` (24), `test_bench_stats.py` (8) — 100 тестов, только публичные импорты, ruff чисто.
+Итог генератора: 106 тестов, 104 прошли, 2 падают (находки); покрытие в зоне задания: streaming
+window/alerts 100%, analyzer 92%, hub 100%, pycollector/windows 100%, bench/stats 100%, analytics/clean 88%,
+dashboard/app 92%.
+
+НАХОДКИ генератора:
+1. `test_window_closes_only_after_end_plus_lateness_strictly` — контракт: окно закрывается, когда время
+   «ушло за» `window_end + lateness`; `pycollector/windows.py` закрывает уже при равенстве (`>=`).
+2. `test_unseen_lower_seq_is_not_a_duplicate` — любой `seq` ≤ максимума устройства считается дубликатом,
+   даже если такого `seq` ещё не было.
+
+Замечания: семантика `count` у pycollector (только валидные) и streaming (все показания) различается;
+пакетная запись по размеру в pycollector не покрыта (нужен `run()` с aiohttp). Во время работы файлы
+тестов менялись на диске извне (это был `ruff --fix` основного агента).
