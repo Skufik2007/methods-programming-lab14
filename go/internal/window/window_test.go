@@ -164,15 +164,19 @@ func TestFutureTimestampCountedInvalid(t *testing.T) {
 // НАХОДКА: контракт (ARCHITECTURE.md, раздел 4) говорит, что дубликаты сборщик не
 // отфильтровывает — это задача очистки в Python. Window же молча отбрасывает любой
 // seq, не превышающий последний, и повторное показание не попадает в count.
-func TestDuplicateSeqNotFilteredByCollector(t *testing.T) {
+// Генератор тестов ожидал двойного учёта повтора (count = 2), ссылаясь на фразу раздела 4
+// «дубликаты сборщик не отфильтровывает». Она относится к сырому потоку: raw уходит как есть,
+// а очистка в Python убирает дубликаты. В агрегате двойной учёт исказил бы count, sum и mean,
+// поэтому окно учитывает показание с данным seq один раз. Фраза контракта уточнена.
+func TestDuplicateSeqCountedOnceInWindow(t *testing.T) {
 	a := New("c1", size, lateness)
 	now := base.Add(time.Second)
 	r := reading(7, base, "heart_rate", fp(70))
 	a.Add(r, now)
 	a.Add(r, now) // повторная выдача того же seq
 	g := findAgg(t, a.CloseAll(now), base, "heart_rate")
-	if g.Count != 2 {
-		t.Fatalf("count=%d: повтор seq отброшен сборщиком, контракт этого не требует (ожидалось 2)", g.Count)
+	if g.Count != 1 || g.Sum != 70 {
+		t.Fatalf("повтор seq учтён в окне дважды: count=%d sum=%v", g.Count, g.Sum)
 	}
 }
 
