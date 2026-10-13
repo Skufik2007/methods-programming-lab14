@@ -193,7 +193,10 @@ func (g *Generator) cleanValue(n int, mi int, k int64, t int64) float64 {
 	v := base + 0.30*w*math.Sin(2*math.Pi*sec/p1+f1) + 0.10*w*math.Sin(2*math.Pi*sec/p2+f2)
 	v += (g.u(saltNoise, uint64(n), uint64(k)) - 0.5) * 0.06 * w
 	if kind, env := g.episode(n, t); env > 0 && episodeTargets[kind].metric == metric {
-		v = v*(1-env) + episodeTargets[kind].target*env
+		// Сдвигаем базовый уровень к целевому, сохраняя дрейф и шум: смешивание
+		// v·(1−env)+target·env на пике давало ровно target — плоскую линию, одинаковую
+		// у всех пациентов (находка №3).
+		v += (episodeTargets[kind].target - base) * env
 	}
 	r := model.Ranges[metric]
 	v = max(r.Lo, min(r.Hi, v))
