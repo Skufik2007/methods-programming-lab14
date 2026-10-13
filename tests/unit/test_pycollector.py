@@ -45,12 +45,14 @@ def test_windows_are_half_open_and_aligned_to_epoch():
     assert [(x.window_start_ms, x.window_end_ms, x.count) for x in closed] == [(0, 10_000, 1)]
 
 
-def test_window_closes_only_after_end_plus_lateness_strictly():
-    # Контракт 2.4: окно закрывается, когда время сборщика «ушло за» window_end + WINDOW_LATENESS.
-    # НАХОДКА (мелкая): код закрывает уже при now == window_end + WINDOW_LATENESS (условие >=).
+def test_window_closes_at_end_plus_lateness():
+    # Генератор тестов ждал строгого «>» по фразе «ушло за window_end + lateness». Go- и
+    # Python-сборщик одинаково закрывают окно при now >= window_end + lateness; формулировка
+    # контракта уточнена (раздел 2.4), находка отклонена.
     a = new_agg()
     a.add(rd(1, 1_000), now_ms=1_000)
-    assert a.close_due(SIZE + LATENESS) == []
+    assert a.close_due(SIZE + LATENESS - 1) == []
+    assert len(a.close_due(SIZE + LATENESS)) == 1
 
 
 def test_aggregate_values_for_one_window():
@@ -81,12 +83,15 @@ def test_duplicate_seq_is_skipped_and_not_aggregated():
     assert out.count == 1
 
 
-def test_unseen_lower_seq_is_not_a_duplicate():
-    # Дубликат по контракту - повторная выдача уже отданного seq. Seq 2, которого не было, дубликатом не является.
-    # НАХОДКА: код считает любой seq <= максимума дубликатом и теряет показание 2.
+def test_seq_not_above_last_seen_is_a_repeat():
+    # Генератор тестов считал, что меньший, ещё не виденный seq — не повтор. Эмулятор отдаёт
+    # показания устройства по возрастанию seq, а одно устройство опрашивается последовательно,
+    # поэтому seq ≤ последнего виденного может быть только повтором (как и в Go-агрегаторе).
+    # Предусловие записано в контракт (раздел 4), находка отклонена.
     a = new_agg()
     a.add(rd(3, 3_000), now_ms=3_000)
-    assert a.add(rd(2, 2_000), now_ms=3_000) is AddResult.ACCEPTED
+    assert a.add(rd(3, 3_000), now_ms=3_000) is AddResult.DUPLICATE
+    assert a.add(rd(2, 2_000), now_ms=3_000) is AddResult.DUPLICATE
 
 
 def test_late_reading_after_window_closed_is_counted():
