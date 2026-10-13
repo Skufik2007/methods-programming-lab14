@@ -39,6 +39,11 @@ build-backend = "setuptools.build_meta"
 where = ["python"]
 include = ["vitals*"]
 
+# Веб-ресурсы дашборда — не .py, без этого их нет в колесе (находка №4: в Docker дашборд
+# падал, локально editable-установка это скрывала).
+[tool.setuptools.package-data]
+"vitals.dashboard" = ["static/*"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py312"
