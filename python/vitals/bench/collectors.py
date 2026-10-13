@@ -19,6 +19,12 @@ from vitals.bench.results import IMG_DIR, write_result
 from vitals.bench.stats import common_prefix_identical, median, rate, readings_comparable, summarize_runs
 
 SAMPLE_DEVICES = 3  # у скольких устройств сверяем строки сборщиков побайтно
+# Находка №5: при BATCH_SIZE=500 оба сборщика упирались в fsync после каждого пакета
+# (~150 fsync/с), и замер сравнивал скорость синхронизации диска, а не языки:
+# Go давал 72 тыс. показаний/с при 500, 334 тыс. при 5000 и 446 тыс. при 20000.
+# Пропускную способность меряем с большим пакетом, влияние размера пакета — отдельно (batch_sweep).
+BENCH_BATCH = 10_000
+SWEEP_BATCHES = (500, 5_000, 20_000)
 SAMPLE_LINES = 2000
 
 
@@ -36,17 +42,19 @@ def sample_lines(raw_dir: Path, wanted: set[str]) -> dict[str, list[str]]:
     return out
 
 
-def one_run(kind: str, sim_url: str, devices: int, duration: float, workers: int, port: int) -> dict[str, Any]:
+def one_run(kind: str, sim_url: str, devices: int, duration: float, workers: int, port: int,
+            batch: int = BENCH_BATCH) -> dict[str, Any]:
     out = Path(tempfile.mkdtemp(prefix=f"bench-{kind}-"))  # свежий OUT_DIR на каждый прогон
     try:
-        env = procs.collector_env(sim_url, out, port, workers=workers, emit="raw")
+        env = procs.collector_env(sim_url, out, port, workers=workers, emit="raw",
+                                  extra={"BATCH_SIZE": str(batch)})
         m = procs.run_measured(procs.collector_command(kind, duration), env, timeout=duration + 60)
         raw_dir = out / "raw"
         readings = procs.count_lines(raw_dir) if raw_dir.exists() else 0
         wanted = {f"dev-{i:04d}" for i in range(1, min(devices, SAMPLE_DEVICES) + 1)}
         samples = sample_lines(raw_dir, wanted) if readings else {}
         return {
-            "collector": kind, "exit_code": m.exit_code, "readings": readings,
+            "collector": kind, "batch_size": batch, "exit_code": m.exit_code, "readings": readings,
             "readings_per_s": rate(readings, duration), "bytes": procs.dir_bytes(raw_dir) if readings else 0,
             "peak_rss_mb": m.peak_rss_mb, "cpu_s": m.cpu_s, "cpu_pct": m.cpu_pct, "wall_s": m.wall_s,
             "_samples": samples,
@@ -91,8 +99,11 @@ def run(quick: bool = False, devices: list[int] | None = None, latencies: list[i
     summary = summarize_runs(runs, ("devices", "latency_ms", "collector"),
                              ("readings_per_s", "peak_rss_mb", "cpu_pct", "cpu_s"))
     params = {"quick": quick, "devices": devices, "latency_ms": latencies, "repeats": repeats,
-              "duration_s": duration, "workers": workers, "emit": "raw", "backlog_hours": 6}
-    path = write_result("collectors", {"params": params, "runs": runs, "summary": summary, "checks": checks})
+              "duration_s": duration, "workers": workers, "emit": "raw", "backlog_hours": 6,
+              "batch_size": BENCH_BATCH}
+    sweep = batch_sweep(sim_port, status_port, duration, workers, 1 if quick else repeats)
+    path = write_result("collectors", {"params": params, "runs": runs, "summary": summary, "checks": checks,
+                                       "batch_sweep": sweep})
     plot(summary)
     print(f"-> {path}")
     return {"summary": summary, "checks": checks}
@@ -109,3 +120,18 @@ def plot(summary: list[dict[str, Any]]) -> Path:
                       for c in cats] for k in ("go", "python")}
         grouped_bars(ax, labels, series, ylabel, title)
     return save_figure(fig, "bench_collectors.png", IMG_DIR)
+
+
+def batch_sweep(sim_port: int, status_port: int, duration: float, workers: int, repeats: int) -> list[dict[str, Any]]:
+    """Влияние BATCH_SIZE (а значит, частоты fsync) на пропускную способность обоих сборщиков."""
+    runs: list[dict[str, Any]] = []
+    with procs.simulator(sim_port, 200, 0, backlog_hours=6) as url:
+        for batch in SWEEP_BATCHES:
+            for kind in ("go", "python"):
+                for rep in range(repeats):
+                    r = one_run(kind, url, 200, duration, workers, status_port, batch=batch)
+                    r.pop("_samples", None)
+                    r.update(devices=200, latency_ms=0, repeat=rep)
+                    runs.append(r)
+                    print(f"  batch={batch} {kind}: {r['readings_per_s']:.0f} показ./с", flush=True)
+    return summarize_runs(runs, ("batch_size", "collector"), ("readings_per_s", "cpu_pct"))
