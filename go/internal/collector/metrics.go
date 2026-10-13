@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,28 @@ func (c *Collector) sinkStats() map[string]sinks.Stats {
 		}
 	}
 	return out
+}
+
+// extraReporter — необязательные счётчики стока сверх sinks.Stats (подтверждения NATS,
+// DoGet Flight); infoReporter — то же для Assigner (члены etcd и т.п.).
+type extraReporter interface{ Extra() map[string]int64 }
+type infoReporter interface{ Info() map[string]int64 }
+
+func (c *Collector) sinkExtras() map[string]map[string]int64 {
+	out := map[string]map[string]int64{}
+	for _, s := range c.sinks {
+		if r, ok := s.Sink.(extraReporter); ok {
+			out[s.Name] = r.Extra()
+		}
+	}
+	return out
+}
+
+func (c *Collector) coordInfo() map[string]int64 {
+	if r, ok := c.asg.(infoReporter); ok {
+		return r.Info()
+	}
+	return nil
 }
 
 func (c *Collector) assigned() []string {
@@ -75,6 +98,18 @@ func (c *Collector) serveMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "collector_sink_records_total{sink=%q,kind=\"raw\"} %d\n", name, st.RawRecords)
 		fmt.Fprintf(w, "collector_sink_records_total{sink=%q,kind=\"agg\"} %d\n", name, st.AggRecords)
 	}
+	// доп. счётчики стоков (nats: acks, ack_errors...; flight: do_get_calls...)
+	fmt.Fprintf(w, "# TYPE collector_sink_stat gauge\n")
+	for name, m := range c.sinkExtras() {
+		for _, k := range sortedKeys(m) {
+			fmt.Fprintf(w, "collector_sink_stat{sink=%q,stat=%q} %d\n", name, k, m[k])
+		}
+	}
+	// состояние координации: члены etcd, владение устройствами
+	info := c.coordInfo()
+	for _, k := range sortedKeys(info) {
+		fmt.Fprintf(w, "# TYPE collector_%s gauge\ncollector_%s %d\n", k, k, info[k])
+	}
 }
 
 func (c *Collector) serveStatus(w http.ResponseWriter, _ *http.Request) {
@@ -97,9 +132,20 @@ func (c *Collector) serveStatus(w http.ResponseWriter, _ *http.Request) {
 		"queue_length":     len(c.in),
 		"queue_capacity":   cap(c.in),
 		"sinks":            c.sinkStats(),
+		"sinks_extra":      c.sinkExtras(),
+		"coord":            c.coordInfo(),
 		"devices_assigned": len(devs),
 		"devices":          shown,
 	})
+}
+
+func sortedKeys(m map[string]int64) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

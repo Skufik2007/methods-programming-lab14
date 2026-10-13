@@ -137,6 +137,19 @@ type Collector struct {
 	StatusAddr      string
 	HTTPTimeout     time.Duration
 	ShutdownTimeout time.Duration
+
+	// Координация (раздел 5): static — прежние статические реализации, etcd — HRW + чекпоинты в etcd.
+	Coord         string
+	EtcdEndpoints []string
+	EtcdTTL       time.Duration
+
+	// NATS JetStream (сток nats).
+	NatsURL string
+
+	// Arrow Flight (сток flight).
+	FlightAddr      string // адрес прослушивания gRPC
+	FlightAdvertise string // адрес для публикации в etcd (пусто — вывести из FlightAddr)
+	FlightRetention time.Duration
 }
 
 var knownSinks = map[string]bool{"files": true, "nats": true, "flight": true}
@@ -159,6 +172,12 @@ func LoadCollector(get Getenv) (Collector, error) {
 		StatusAddr:      r.str("STATUS_ADDR", ":9100"),
 		HTTPTimeout:     r.duration("HTTP_TIMEOUT", 10*time.Second, 100*time.Millisecond),
 		ShutdownTimeout: r.duration("SHUTDOWN_TIMEOUT", 15*time.Second, time.Second),
+		Coord:           r.str("COORD", "static"),
+		EtcdTTL:         r.duration("ETCD_TTL", 10*time.Second, time.Second),
+		NatsURL:         r.str("NATS_URL", "nats://localhost:4222"),
+		FlightAddr:      r.str("FLIGHT_ADDR", ":8815"),
+		FlightAdvertise: r.str("FLIGHT_ADVERTISE", ""),
+		FlightRetention: r.duration("FLIGHT_RETENTION", 15*time.Minute, time.Second),
 	}
 	if c.Window%time.Second != 0 {
 		r.fail("WINDOW", "должно быть кратно секунде (формат window_start без долей), получено %s", c.Window)
@@ -183,6 +202,20 @@ func LoadCollector(get Getenv) (Collector, error) {
 	}
 	if len(c.Sinks) == 0 {
 		r.fail("SINKS", "нужен хотя бы один сток")
+	}
+	switch c.Coord {
+	case "static":
+	case "etcd":
+		for _, e := range strings.Split(get("ETCD_ENDPOINTS"), ",") {
+			if e = strings.TrimSpace(e); e != "" {
+				c.EtcdEndpoints = append(c.EtcdEndpoints, e)
+			}
+		}
+		if len(c.EtcdEndpoints) == 0 {
+			r.fail("ETCD_ENDPOINTS", "обязателен при COORD=etcd (например localhost:2379)")
+		}
+	default:
+		r.fail("COORD", "допустимо static или etcd; получено %q", c.Coord)
 	}
 	for _, d := range strings.Split(get("DEVICE_LIST"), ",") {
 		if d = strings.TrimSpace(d); d != "" {
