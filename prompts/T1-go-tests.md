@@ -51,3 +51,17 @@
   нашлись три ошибки).
 - Лимит «две попытки на файл» и effort low — в ЛР №13 генератор Go-тестов потратил 367k
   токенов в основном на цикл отладки.
+
+## Ответ генератора (итоговое сообщение, сокращено)
+
+Работа прервалась обрывом соединения с API и была продолжена тем же генератором. Файлы:
+`sim/sim_test.go`, `window/window_test.go`, `collector/collector_test.go`, `coord/hrw_test.go`,
+`coord/etcd_test.go` (встроенный etcd), `sinks/files/files_test.go`, `sinks/flightsink/flightsink_test.go`
+(DoGet через Flight-клиент), `sinks/natssink/natssink_test.go` (встроенный nats-server),
+`config/config_test.go`. `go vet` чисто; тестовые зависимости etcd server/v3 и nats-server/v2.
+
+Покрытие: sim 89,9%, window 91,4%, collector 56,2%, coord 76,4%, files 77,4%, flightsink 82,6%,
+natssink 61,3%, config 94,8%.
+
+НАХОДКА генератора: `window_test.go::TestDuplicateSeqNotFilteredByCollector` — по разделу 4 контракта
+«дубликаты сборщик не отфильтровывает», а агрегатор окон пропускает повторный `seq` (count 1 вместо 2).
