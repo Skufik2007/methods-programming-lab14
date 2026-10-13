@@ -51,6 +51,26 @@ def pick_patient(clean: pl.DataFrame, episodes: pl.DataFrame) -> str | None:
     return hr.group_by("patient_id").len().sort("len", "patient_id", descending=[True, False])["patient_id"][0]
 
 
+ALERT_METRIC = {"tachycardia": "heart_rate", "desaturation": "spo2", "fever": "temperature",
+                "hypertension": "systolic_bp"}
+PANEL_TITLES = {"heart_rate": "ЧСС, уд/мин", "spo2": "SpO2, %", "temperature": "Температура, °C",
+                "systolic_bp": "САД, мм рт. ст."}
+
+
+def timeseries_panels(episodes: pl.DataFrame, patient: str) -> list[str]:
+    """Две панели графика пациента: метрики его эпизодов (в порядке появления), дополненные ЧСС/SpO2.
+
+    Раньше всегда рисовались ЧСС и SpO2, и полоса эпизода лихорадки закрывала графики без
+    отклонений (находка №6).
+    """
+    own = episodes.filter(pl.col("patient_id") == patient)["alert"].to_list() if not episodes.is_empty() else []
+    panels: list[str] = []
+    for metric in [ALERT_METRIC[a] for a in own if a in ALERT_METRIC] + ["heart_rate", "spo2"]:
+        if metric not in panels:
+            panels.append(metric)
+    return panels[:2]
+
+
 def heatmap_data(clean: pl.DataFrame, metric: str = "heart_rate") -> tuple[list[str], list[Any], np.ndarray, str]:
     """Матрица «пациент x интервал времени»: среднее значение метрики.
 
@@ -105,34 +125,41 @@ def make_plots(
         plt.close(fig)
         created.append(path.name)
 
-    # 1. Временной ряд ЧСС и SpO2 пациента с эпизодами
+    # 1. Временной ряд пациента: метрики его эпизодов, полоса эпизода — на панели своей метрики
     patient = pick_patient(clean, episodes)
     if patient is not None:
+        panels = timeseries_panels(episodes, patient)
         series = {
-            m: clean.filter((pl.col("patient_id") == patient) & (pl.col("metric") == m)).sort("ts")
-            for m in ("heart_rate", "spo2")
+            m: clean.filter((pl.col("patient_id") == patient) & (pl.col("metric") == m)).sort("ts") for m in panels
         }
-        spans = episodes.filter(pl.col("patient_id") == patient)
-        titles = {"heart_rate": "ЧСС, уд/мин", "spo2": "SpO2, %"}
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=list(titles.values()))
-        for row, m in enumerate(titles, start=1):
+        last_ts = max((series[m]["ts"].max() for m in panels if series[m].height), default=None)
+        spans = [
+            (s, min(e, last_ts) if last_ts is not None else e, alert)
+            for s, e, alert in episodes.filter(pl.col("patient_id") == patient)
+            .select("start", "end", "alert")
+            .iter_rows()
+        ]
+        titles = {m: PANEL_TITLES[m] for m in panels}
+        heading = f"Пациент {patient}: {', '.join(titles.values())} и эпизоды"
+        fig = make_subplots(rows=len(panels), cols=1, shared_xaxes=True, subplot_titles=list(titles.values()))
+        for row, m in enumerate(panels, start=1):
             trace = go.Scatter(x=series[m]["ts"], y=series[m]["value"], mode="lines", name=titles[m])
             fig.add_trace(trace, row=row, col=1)
-        for s, e, alert in spans.select("start", "end", "alert").iter_rows():
-            fig.add_vrect(
-                x0=s, x1=e, fillcolor="red", opacity=0.2, line_width=0, annotation_text=alert, row="all", col=1
-            )
-        fig.update_layout(title=f"Пациент {patient}: ЧСС и SpO2 с эпизодами", height=600)
+            for s, e, alert in spans:
+                if ALERT_METRIC.get(alert) == m:
+                    fig.add_vrect(x0=s, x1=e, fillcolor="red", opacity=0.2, line_width=0,
+                                  annotation_text=alert, row=row, col=1)
+        fig.update_layout(title=heading, height=600)
         save_html(fig, "timeseries")
-        mfig, axes = plt.subplots(2, 1, sharex=True, figsize=(10, 6))
-        for ax, (m, label) in zip(axes, titles.items(), strict=True):
+        mfig, axes = plt.subplots(len(panels), 1, sharex=True, figsize=(10, 6), squeeze=False)
+        for ax, m in zip(axes[:, 0], panels, strict=True):
             ax.plot(series[m]["ts"].to_list(), series[m]["value"].to_list(), lw=0.8)
-            ax.set_ylabel(label)
-            for s, e, alert in spans.select("start", "end", "alert").iter_rows():
-                ax.axvspan(s, e, color="red", alpha=0.2)
-                if m == "heart_rate":
+            ax.set_ylabel(titles[m])
+            for s, e, alert in spans:
+                if ALERT_METRIC.get(alert) == m:
+                    ax.axvspan(s, e, color="red", alpha=0.2)
                     ax.annotate(alert, (s, ax.get_ylim()[1]), fontsize=7, va="top")
-        axes[0].set_title(f"Пациент {patient}: ЧСС и SpO2 с эпизодами")
+        axes[0, 0].set_title(heading)
         mfig.autofmt_xdate()
         save_png(mfig, "timeseries")
 
